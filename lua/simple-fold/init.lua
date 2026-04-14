@@ -47,27 +47,116 @@ function M._render_logic()
     local prev_hl = nil
     local current_text = ""
     
+    local open_cluster = ""
+    local close_cluster = ""
+    local found_bracket = false
+    local brace_hl = "Special" -- Fallback
+    
     local win_width = vim.api.nvim_win_get_width(0)
     local max_col = math.min(#line, win_width - 30)
     
-    -- Smart cut: only cut if the bracket is at the very end of the line's content
-    -- (likely the fold-starting bracket)
+    -- If it's a tag, only render the tag name part in the first loop
+    -- The Attribute Collector will handle all props (even those on line 1)
+    local is_tag = line:match("^%s*<")
+    if is_tag then
+        local tag_start = line:find("<") or 0
+        local first_space = line:find(" ", tag_start)
+        local tag_close = line:find(">", tag_start)
+        local limit = max_col
+        if first_space then limit = math.min(limit, first_space - 1) end
+        if tag_close then limit = math.min(limit, tag_close - 1) end
+        max_col = limit
+    end
+
+    -- Smart cut: cut at brackets OR tag ends at the end of the line
     local _, last_bracket = line:find(".*[{(%[]%s*$")
+    if not last_bracket then
+        _, last_bracket = line:find(".*>%s*$")
+    end
+    
     if last_bracket then
         local cluster_start = last_bracket
-        while cluster_start > 1 and line:sub(cluster_start-1, cluster_start-1):match("[{(%[]") do
+        while cluster_start > 1 and line:sub(cluster_start-1, cluster_start-1):match("[{(%[%>]") do
             cluster_start = cluster_start - 1
         end
         max_col = math.min(max_col, cluster_start - 1)
+    end
+
+    -- 2. Truth Test: Verify against the closing line of the fold!
+    -- This definitively resolves PSR-12, complex React declarations, and HTML/JSX tags.
+    local end_line_text = vim.api.nvim_buf_get_lines(0, end_pos - 1, end_pos, false)[1] or ""
+    local trim_end = end_line_text:match("^%s*(.*)")
+
+    local function get_tag_match(line_text)
+        if not line_text then return nil end
+        local t = line_text:match("^%s*(.*)")
+        if not t then return nil end
+        return t:match("^(</[^>]+>)")
+    end
+
+    local tag_match = get_tag_match(end_line_text)
+    
+    -- HTML/Blade enhancement: If no tag match on end_pos, peek at end_pos + 1
+    if not tag_match then
+        local next_line = vim.api.nvim_buf_get_lines(0, end_pos, end_pos + 1, false)[1]
+        tag_match = get_tag_match(next_line)
+    end
+    
+    if tag_match then
+        found_bracket = true
+        close_cluster = tag_match
+        
+        -- Attempt to steal highlight from the actual tag name (after the </)
+        local tag_start_idx = string.find(end_line_text, tag_match, 1, true)
+        if tag_start_idx then
+            tag_start_idx = tag_start_idx - 1
+            local check_col = tag_start_idx + math.min(2, #tag_match - 1)
+            local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, end_pos - 1, check_col)
+            if ok and caps and #caps > 0 then 
+                local best_cap = caps[#caps].capture
+                local priorities = { "constructor", "type", "builtin", "tag" }
+                for _, p in ipairs(priorities) do
+                    for _, cap in ipairs(caps) do
+                        if cap.capture:match(p) then
+                            best_cap = cap.capture
+                            goto found_close_best
+                        end
+                    end
+                end
+                ::found_close_best::
+                brace_hl = "@" .. best_cap
+            end
+        end
     end
 
     for col = 0, max_col - 1 do
         local char = line:sub(col + 1, col + 1)
         local capture_name = "Normal"
         local success, captures = pcall(vim.treesitter.get_captures_at_pos, 0, pos - 1, col)
+        
         if success and captures and #captures > 0 then
-            capture_name = "@" .. captures[#captures].capture
+            -- Prioritize more specific captures (Attributes, Components, Types, Variables)
+            local best_cap = captures[#captures].capture
+            local priorities = { "attribute", "property", "variable", "constructor", "type", "builtin" }
+            
+            -- If we already found a 'Truth' tag match and this is part of the tag, reuse brace_hl
+            if tag_match and col > 0 and char:match("[%w]") then
+                capture_name = brace_hl
+                goto skip_prio
+            end
+
+            for _, p in ipairs(priorities) do
+                for _, cap in ipairs(captures) do
+                    if cap.capture:match(p) then
+                        best_cap = cap.capture
+                        goto found_best
+                    end
+                end
+            end
+            ::found_best::
+            capture_name = "@" .. best_cap
         end
+        ::skip_prio::
         if capture_name == prev_hl then
             current_text = current_text .. char
         else
@@ -79,24 +168,14 @@ function M._render_logic()
     if current_text ~= "" then table.insert(text_parts, { current_text, prev_hl }) end
 
     -- Smart Brace Detection (Type-First approach)
-    local open_char = "{"
-    local close_char = "}"
-    local found_on_first = false
-    local brace_hl = "Special" -- Fallback
 
     -- 1. Identify the chain of opening brackets ending at the main fold point
-    -- Use find with .* to get the index of the LAST bracket
-    local _, b_end = line:find(".*[{(%[]")
-    local open_cluster = ""
-    local close_cluster = ""
-    local found_bracket = false
-
+    local _, b_end = line:find(".*[{(%[%>]")
     if b_end then
-        -- Find the absolute START of this contiguous bracket chain
         local chain_start = b_end
         while chain_start > 1 do
             local prev = line:sub(chain_start - 1, chain_start - 1)
-            if prev:match("[{(%[]") then
+            if prev:match("[{(%[%>]") then
                 chain_start = chain_start - 1
             else
                 break
@@ -107,50 +186,263 @@ function M._render_logic()
         for i = chain_start, b_end do
             if count >= 3 then break end
             local char = line:sub(i, i)
-            if char:match("[{(%[]") then
+            if char:match("[{(%[%>]") then
                 open_cluster = open_cluster .. char
-                local c = (char == "{") and "}" or (char == "[" and "]" or ")")
+                local c = (char == "{") and "}" or (char == "[" and "]" or (char == "(" and ")" or (char == "<" and ">" or "")))
                 close_cluster = close_cluster .. c
                 count = count + 1
             end
         end
 
-        -- Correctly reverse close_cluster for balanced output
         local reversed_close = ""
         for i = #close_cluster, 1, -1 do
             reversed_close = reversed_close .. close_cluster:sub(i, i)
         end
         close_cluster = reversed_close
 
-        found_on_first = true
         found_bracket = true
+        
         -- Highlight based on the very last bracket in the chain
         local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, pos - 1, b_end - 1)
         if ok and caps and #caps > 0 then brace_hl = "@" .. caps[#caps].capture end
-        -- 2. Look on the next line (PSR-12)
-        local next_l = vim.api.nvim_buf_get_lines(0, pos, pos + 1, false)[1] or ""
-        local _, next_end = next_l:find(".*[{(%[]")
-        if next_end then
-            local char = next_l:sub(next_end, next_end)
-            open_cluster = char
-            close_cluster = (char == "{") and "}" or (char == "[" and "]" or ")")
-            found_bracket = true
-            local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, pos, next_end - 1)
-            if ok and caps and #caps > 0 then brace_hl = "@" .. caps[#caps].capture end
+    end
+
+    -- 2. Truth Test: Verify against the closing line of the fold!
+    -- This definitively resolves PSR-12, complex React declarations, and HTML/JSX tags.
+    local end_line_text = vim.api.nvim_buf_get_lines(0, end_pos - 1, end_pos, false)[1] or ""
+    local trim_end = end_line_text:match("^%s*(.*)")
+
+    local function get_tag_match(line_text)
+        if not line_text then return nil end
+        local t = line_text:match("^%s*(.*)")
+        if not t then return nil end
+        return t:match("^(</[^>]+>)")
+    end
+
+    local tag_match = get_tag_match(end_line_text)
+    
+    -- HTML/Blade enhancement: If no tag match on end_pos, peek at end_pos + 1
+    if not tag_match then
+        local next_line = vim.api.nvim_buf_get_lines(0, end_pos, end_pos + 1, false)[1]
+        tag_match = get_tag_match(next_line)
+    end
+    
+    if tag_match then
+        found_bracket = true
+        close_cluster = tag_match
+        
+        -- Attempt to steal highlight from the actual tag name (after the </)
+        local tag_start_idx = string.find(end_line_text, tag_match, 1, true)
+        if tag_start_idx then
+            tag_start_idx = tag_start_idx - 1
+            local check_col = tag_start_idx + math.min(2, #tag_match - 1)
+            local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, end_pos - 1, check_col)
+            if ok and caps and #caps > 0 then 
+                local best_cap = caps[#caps].capture
+                local priorities = { "constructor", "type", "builtin", "tag" }
+                for _, p in ipairs(priorities) do
+                    for _, cap in ipairs(caps) do
+                        if cap.capture:match(p) then
+                            best_cap = cap.capture
+                            goto found_close_best
+                        end
+                    end
+                end
+                ::found_close_best::
+                brace_hl = "@" .. best_cap
+            end
+        end
+
+        -- Robust Attribute Collector: Using Treesitter to "hunt" attributes across lines
+        local tag_col = line:find("<") or 0
+        local ok_node, node = pcall(vim.treesitter.get_node, { bufnr = 0, pos = { pos - 1, tag_col } })
+        
+        -- Navigate to the opening element node
+        while ok_node and node and node:type() ~= "jsx_opening_element" and node:type() ~= "start_tag" do
+            local p = node:parent()
+            if not p or (p:start() ~= node:start()) then break end
+            node = p
+        end
+
+        if ok_node and node then
+            local attrs = {}
+            for child in node:iter_children() do
+                if child:type():match("attribute") then
+                    table.insert(attrs, child)
+                end
+            end
+            
+            -- Render the first 5 attributes with GRANULAR highlight
+            for i = 1, math.min(5, #attrs) do
+                local attr_node = attrs[i]
+                local a_start_row, a_start_col = attr_node:start()
+                local a_end_row, a_end_col = attr_node:end_()
+                
+                table.insert(text_parts, { " ", "Normal" })
+                
+                -- Support multiline attribute nodes by iterating through their lines/cols
+                for r = a_start_row, a_end_row do
+                    local a_line = vim.api.nvim_buf_get_lines(0, r, r + 1, false)[1] or ""
+                    local s_col = (r == a_start_row) and a_start_col or 0
+                    local e_col = (r == a_end_row) and a_end_col or #a_line
+                    
+                    local current_chunk = ""
+                    local chunk_hl = nil
+                    
+                    for c = s_col, e_col - 1 do
+                        local a_char = a_line:sub(c + 1, c + 1)
+                        local ok_c, a_caps = pcall(vim.treesitter.get_captures_at_pos, 0, r, c)
+                        local a_hl = "@attribute"
+                        if ok_c and a_caps and #a_caps > 0 then
+                            a_hl = "@" .. a_caps[#a_caps].capture
+                        end
+                        
+                        if a_hl == chunk_hl then
+                            current_chunk = current_chunk .. a_char
+                        else
+                            if chunk_hl then table.insert(text_parts, { current_chunk, chunk_hl }) end
+                            current_chunk = a_char
+                            chunk_hl = a_hl
+                        end
+                    end
+                    if current_chunk ~= "" then table.insert(text_parts, { current_chunk, chunk_hl }) end
+                end
+            end
+            
+            if #attrs > 5 then
+                table.insert(text_parts, { " ... ", "Comment" })
+            end
+        end
+        open_cluster = line:match("/%s*>$") and "/>" or ">" -- Complete the tag visually
+    elseif trim_end then
+        -- Existing Bracket Truth Test
+        local first_char = trim_end:sub(1,1)
+        local expected_open = (first_char == "}") and "{" or (first_char == "]") and "[" or (first_char == ")") and "(" or nil
+        
+        if expected_open then
+            if not found_bracket or close_cluster:sub(1,1) ~= first_char then
+                open_cluster = expected_open
+                close_cluster = first_char
+                found_bracket = true
+                
+                local start_col = string.find(end_line_text, trim_end, 1, true)
+                if start_col then
+                    start_col = start_col - 1
+                    local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, end_pos - 1, start_col)
+                    if ok and caps and #caps > 0 then brace_hl = "@" .. caps[#caps].capture end
+                end
+            end
         end
     end
 
     -- 3. Render the fold breadcrumb
     if not found_bracket then
         table.insert(text_parts, { " ... ", "Comment" })
-    elseif found_on_first then
-        table.insert(text_parts, { open_cluster, brace_hl })
-        table.insert(text_parts, { " ... ", "Comment" })
-        table.insert(text_parts, { close_cluster .. " ", brace_hl })
     else
-        table.insert(text_parts, { " " .. open_cluster, brace_hl })
+        -- Extract isolated dependency arrays for multiline hooks (e.g. useMemo, useCallback)
+        local prev_deps_match = nil
+        local prev_start_col = nil
+        local prev_line = nil
+        
+        if close_cluster == ")" then
+            local e_line = vim.api.nvim_buf_get_lines(0, end_pos - 1, end_pos, false)[1] or ""
+            local e_trim = e_line:match("^%s*(.*)")
+            if e_trim and vim.startswith(e_trim, ")") then
+                local e_suf = e_trim:sub(2):match("^(.-)%s*$")
+                -- Only look backwards if the closing line doesn't have significant content
+                if e_suf == "" or e_suf == ";" or e_suf == "," then
+                    local p_line = vim.api.nvim_buf_get_lines(0, end_pos - 2, end_pos - 1, false)[1] or ""
+                    local p_trim = p_line:match("^%s*(.*)")
+                    if p_trim then
+                        -- Check if the preceding line is purely a dependency array e.g. `[deps],` or `, [deps]`
+                        local d_match = p_trim:match("^(,?[%s]*%[.*%]),?$")
+                        if d_match then
+                            prev_deps_match = d_match
+                            prev_line = p_line
+                            prev_start_col = string.find(p_line, d_match, 1, true)
+                        end
+                    end
+                end
+            end
+        end
+
+        -- SMART PREFIX: Tags get no space, brackets/types get a leading space for readability
+        local prefix = (is_tag or tag_match or open_cluster:match("^[})%]%s]")) and "" or " "
+        table.insert(text_parts, { prefix .. open_cluster, brace_hl })
         table.insert(text_parts, { " ... ", "Comment" })
-        table.insert(text_parts, { close_cluster .. " ", brace_hl })
+        
+        -- Inject the extracted multiline React hook dependency array
+        if prev_deps_match then
+            if not prev_deps_match:match("^,") then
+                table.insert(text_parts, { ", ", "@punctuation.delimiter" })
+            end
+            
+            if prev_start_col then
+                prev_start_col = prev_start_col - 1
+                local e_col = prev_start_col + #prev_deps_match
+                local cur_hl = nil
+                local cur_text = ""
+                for col = prev_start_col, e_col - 1 do
+                    local char = prev_line:sub(col + 1, col + 1)
+                    local hl = "Normal"
+                    local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, end_pos - 2, col)
+                    if ok and caps and #caps > 0 then hl = "@" .. caps[#caps].capture end
+                    
+                    if hl == cur_hl then cur_text = cur_text .. char
+                    else
+                        if cur_text ~= "" and cur_hl then table.insert(text_parts, { cur_text, cur_hl }) end
+                        cur_text = char
+                        cur_hl = hl
+                    end
+                end
+                if cur_text ~= "" then table.insert(text_parts, { cur_text, cur_hl }) end
+            else
+                table.insert(text_parts, { prev_deps_match, "Normal" })
+            end
+        end
+
+        table.insert(text_parts, { close_cluster, brace_hl })
+        
+        -- Smart trailing suffix extraction (e.g. for React's }, [dependencies]) matches same line
+        local end_line_text = vim.api.nvim_buf_get_lines(0, end_pos - 1, end_pos, false)[1] or ""
+        local trim_end = end_line_text:match("^%s*(.*)")
+        if trim_end and vim.startswith(trim_end, close_cluster) then
+            local end_suffix = trim_end:sub(#close_cluster + 1)
+            end_suffix = end_suffix:match("^(.-)%s*$") -- remove trailing whitespace
+            
+            if end_suffix and #end_suffix > 0 then
+                if #end_suffix > 40 then
+                    end_suffix = end_suffix:sub(1, 40) .. "..."
+                end
+                
+                -- Syntax highlight the suffix flawlessly using treesitter
+                local start_col = string.find(end_line_text, trim_end, 1, true)
+                if start_col then
+                    start_col = start_col - 1 + #close_cluster
+                    local end_col = start_col + #end_suffix
+                    local cur_hl = nil
+                    local cur_text = ""
+                    for col = start_col, end_col - 1 do
+                        local char = end_line_text:sub(col + 1, col + 1)
+                        local hl = "Normal"
+                        local ok, caps = pcall(vim.treesitter.get_captures_at_pos, 0, end_pos - 1, col)
+                        if ok and caps and #caps > 0 then
+                            hl = "@" .. caps[#caps].capture
+                        end
+                        if hl == cur_hl then
+                            cur_text = cur_text .. char
+                        else
+                            if cur_hl then table.insert(text_parts, { cur_text, cur_hl }) end
+                            cur_text = char
+                            cur_hl = hl
+                        end
+                    end
+                    if cur_text ~= "" then table.insert(text_parts, { cur_text, cur_hl }) end
+                else
+                    table.insert(text_parts, { end_suffix, "Normal" })
+                end
+            end
+        end
     end
 
     -- 3. LSP Diagnostics Dashboard
@@ -171,21 +463,7 @@ function M._render_logic()
         end
     end
 
-    -- Return preview
-    local ret_idx = -1
-    local search_limit = math.min(10, num_lines - 1)
-    for i = 1, search_limit do
-        local l = vim.api.nvim_buf_get_lines(0, pos + i - 1, pos + i, false)[1]
-        if l and l:match("^%s*return") then ret_idx = i; break end
-    end
-    if ret_idx ~= -1 then
-        local l = vim.api.nvim_buf_get_lines(0, pos + ret_idx - 1, pos + ret_idx, false)[1]
-        local val = l:match("return%s+(.-);?%s*$")
-        if val then
-            table.insert(text_parts, { " ➔ ", "Special" })
-            table.insert(text_parts, { val:sub(1, 15), "String" })
-        end
-    end
+    -- (Return preview purposefully removed for UI minimalism)
 
     local total = vim.api.nvim_buf_line_count(0)
     local pct = total > 0 and string.format("(%.1f%%)", (num_lines / total) * 100) or ""
@@ -271,8 +549,9 @@ function M.toggle_peek()
     vim.api.nvim_buf_set_lines(preview_buf, 0, -1, false, lines)
     
     vim.bo[preview_buf].undolevels = old_undolevels
-    vim.bo[preview_buf].filetype = ft
     vim.bo[preview_buf].modifiable = true
+
+    vim.bo[preview_buf].filetype = ft
 
     local w = math.min(vim.api.nvim_win_get_width(0) - 10, 100)
     local h = math.min(#lines, vim.api.nvim_win_get_height(0) - 5)
@@ -318,6 +597,34 @@ function M.toggle_peek()
         end)
     end)
 
+    -- --- DIAGNOSTIC MIRRORING LOGIC ---
+    local mirror_ns = vim.api.nvim_create_namespace("SimpleFoldMirror")
+    
+    local function update_preview_diagnostics()
+        if not vim.api.nvim_buf_is_valid(preview_buf) or not vim.api.nvim_buf_is_valid(original_buf) then return end
+        
+        local all_diagnostics = vim.diagnostic.get(original_buf)
+        local mirrored = {}
+        
+        for _, d in ipairs(all_diagnostics) do
+            -- Only mirror diagnostics that fall within the current fold range
+            if d.lnum >= f_start - 1 and d.lnum < f_end then
+                local m = vim.deepcopy(d)
+                local offset = f_start - 1
+                m.lnum = d.lnum - offset
+                m.end_lnum = (d.end_lnum or d.lnum) - offset
+                m.bufnr = preview_buf
+                table.insert(mirrored, m)
+            end
+        end
+        
+        -- Set mirrored diagnostics in its own namespace
+        vim.diagnostic.set(mirror_ns, preview_buf, mirrored)
+        
+        -- Set mirrored diagnostics in its own namespace for reference, but don't draw extmarks
+        vim.diagnostic.set(mirror_ns, preview_buf, mirrored)
+    end
+
     local function sync_back()
         if not vim.api.nvim_buf_is_valid(preview_buf) or not vim.api.nvim_buf_is_valid(original_buf) then return end
         local new_lines = vim.api.nvim_buf_get_lines(preview_buf, 0, -1, false)
@@ -330,9 +637,35 @@ function M.toggle_peek()
         
         vim.api.nvim_buf_set_lines(original_buf, f_start - 1, f_end, false, new_lines)
         f_end = f_start + #new_lines - 1
+        
+        -- After syncing back, the original buffer has the context to re-calculate diagnostics accurately
+        vim.schedule(update_preview_diagnostics)
     end
+    
+    -- Block standard LSP from attaching to the preview buffer (prevents "context-less" errors)
+    vim.api.nvim_create_autocmd("LspAttach", {
+        group = peek_group,
+        buffer = preview_buf,
+        callback = function(args)
+            vim.schedule(function()
+                pcall(vim.lsp.buf_detach_client, args.buf, args.data.client_id)
+            end)
+        end
+    })
 
-    local peek_group = vim.api.nvim_create_augroup("SimpleFoldPeek", { clear = true })
+    -- Listen for diagnostic updates on the original buffer to mirror them live
+    vim.api.nvim_create_autocmd("DiagnosticChanged", {
+        group = peek_group,
+        callback = function(args)
+            if args.data.buf == original_buf then
+                update_preview_diagnostics()
+            end
+        end
+    })
+
+    -- Initial diagnostic mirror
+    vim.schedule(update_preview_diagnostics)
+
     vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
         group = peek_group, buffer = preview_buf,
         callback = sync_back,
@@ -500,7 +833,7 @@ function M.setup(opts)
     vim.keymap.set("n", "za", M.smart_toggle, { silent = true, desc = "SimpleFold: Smart Toggle" })
     vim.keymap.set("n", "zp", M.toggle_peek, { desc = "SimpleFold: Toggle Peek" })
     for i = 1, 5 do
-        vim.keymap.set("n", "z" .. i, function() vim.opt_local.foldlevel = i end)
+        vim.keymap.set("n", "z" .. i, function() vim.opt_local.foldlevel = i end, { desc = "Set Foldlevel " .. i })
     end
 end
 
