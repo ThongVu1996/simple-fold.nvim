@@ -15,12 +15,13 @@ Inspired by [nvim-ufo](https://github.com/kevinhwang91/nvim-ufo), this plugin pr
 7.  **Multiline Return Peeking**: Preview function return values directly on the fold line (e.g., `➔ $this->data`).
 8.  **Absolute PHP Conceal**: Automatically injects and **completely hides** `<?php` tags in Peek windows to enable syntax highlighting for snippets.
 9.  **Persistent Folds**: Remembers your manual folds across sessions and file restarts (Auto `mkview`/`loadview`).
-10. **Safeguarded Peek (Live Edit)**: Use `zp` to edit code in a floating window. Safeguarded against "self-folding" and macro errors.
+10. **Live Edit Portal (`zp`)**: A revolutionary "true-portal" editing experience using the **original buffer**. Allows real-time editing with full LSP, Diagnostics, and Formatter support. Safeguarded against "self-folding" and E966 crashes via intelligent monkey-patching.
 11. **Relative Numbering in Peek**: Improved navigation and editing experience inside the preview window.
 12. **Smart Fold Percentage**: Visualize code density at a glance (e.g., `⚡ 45 lines (12.5%)`).
 13. **Large File Armor**: Automatically scales to faster folding methods for massive files to prevent lag.
 14. **Quick Levels**: Toggle global fold levels instantly with `z1` through `z5`.
 15. **Native Extensibility**: Fully language-agnostic logic. You can gracefully extend any folding patterns via your personal `~/.config/nvim/after/queries/` without modifying core logic.
+16. **Integrated Search & History**: Use `/` and `?` inside the Peek window to search. Includes persistent **Search History (↑/↓ arrows)** and a protected Command-line range to keep your edits bounded.
 
 ## 📦 Installation
 
@@ -52,7 +53,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 *   `zp`: Toggle Peek Fold (Floating window).
 *   `q`: Close Peek window (inside Peek).
 *   `<CR>`: Jump to line and open fold (inside Peek).
-*   `z1` - `z5`: Set fold level globally for the buffer.
+*   `z1` - `z9`: Set fold level globally for the buffer.
 
 ## 🛠️ Configuration
 
@@ -76,5 +77,52 @@ require("simple-fold").setup({
 })
 ```
 
+---
+
+## 🐘 Laravel Blade Setup
+
+For the best experience with **Blade**, you need the v0.12.0+ parser which supports semantic HTML integration.
+
+### 1. Install the Parser
+Add this to your `init.lua` or Treesitter configuration:
+
+```lua
+-- Register the blade filetype
+vim.filetype.add({
+  pattern = {
+    ['.*%.blade%.php'] = 'blade',
+  },
+})
+
+-- Register the blade parser
+local parser_config = require("nvim-treesitter.parsers").get_parser_configs()
+parser_config.blade = {
+  install_info = {
+    url = "https://github.com/EmranMR/tree-sitter-blade",
+    files = {"src/parser.c"},
+    branch = "main",
+  },
+  filetype = "blade"
+}
+```
+Then restart Neovim and run `:TSInstall blade`.
+
+### 2. Configure Folding
+Create `~/.config/nvim/after/ftplugin/blade.lua` and add:
+
+```lua
+-- Smart Treesitter folding for Blade
+vim.opt_local.foldmethod = "expr"
+vim.opt_local.foldexpr = "v:lua.vim.treesitter.foldexpr()"
+
+-- Keep folds open by default
+vim.opt_local.foldlevel = 99
+vim.opt_local.foldenable = true
+
+-- Use Simple-Fold for beautiful rendering
+vim.opt_local.foldtext = "v:lua.require('simple-fold').render()"
+```
+
+---
 ## 📄 License
 MIT
