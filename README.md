@@ -31,16 +31,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 {
     "ThongVu1996/simple-fold.nvim",
     event = { "BufReadPost", "BufNewFile" },
-    opts = {
-        icon = "⚡",
-        suffix_text = "lines",
-        icons = {
-            error = "󰅚 ",
-            warn = "󰀪 ",
-            info = "󰋽 ",
-            hint = "󰌶 ",
-        }
-    },
+    opts = {},
     config = function(_, opts)
         require("simple-fold").setup(opts)
     end
@@ -73,6 +64,13 @@ require("simple-fold").setup({
         preview = "🔍 ",
         fold_open = "",
         fold_close = "",
+    },
+    ui = {
+        search_prompt = "  Search ",
+        search_help = "  ↑/↓=history  Enter=go  Esc=cancel",
+        cmd_prompt = " ⌘ Cmd ",
+        cmd_help = "  range is locked  Enter=run  Esc=cancel",
+        border = "rounded",
     }
 })
 ```

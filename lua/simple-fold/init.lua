@@ -19,6 +19,13 @@ M.config = {
         fold_open = "",
         fold_close = "",
         fold = " ",
+    },
+    ui = {
+        search_prompt = "  Search ",
+        search_help = "  ↑/↓=history  Enter=go  Esc=cancel",
+        cmd_prompt = " ⌘ Cmd ",
+        cmd_help = "  range is locked  Enter=run  Esc=cancel",
+        border = "rounded",
     }
 }
 
@@ -524,7 +531,7 @@ local function open_mini_input(title, prefill, on_confirm, on_cancel, history, p
         row = row, col = col,
         width = w, height = 1,
         style  = 'minimal',
-        border = 'rounded',
+        border = M.config.ui.border,
         title      = ' ' .. title .. ' ',
         title_pos  = 'center',
         zindex     = 250,
@@ -1037,7 +1044,7 @@ function M.toggle_peek()
     -- / : floating Search UI (forward) with persistent history
     smart_map('/', function()
         local ret = p_win
-        open_mini_input('  Search ↓  ↑/↓=history  Enter=go  Esc=cancel', '', function(pattern)
+        open_mini_input(M.config.ui.search_prompt .. M.config.ui.search_help, '', function(pattern)
             if not vim.api.nvim_win_is_valid(ret) then return end
             vim.api.nvim_set_current_win(ret)
             do_fold_search(pattern, true)
@@ -1049,7 +1056,7 @@ function M.toggle_peek()
     -- ? : floating Search UI (backward) — shares search history with /
     smart_map('?', function()
         local ret = p_win
-        open_mini_input('  Search ↑  ↑/↓=history  Enter=go  Esc=cancel', '', function(pattern)
+        open_mini_input(M.config.ui.search_prompt .. M.config.ui.search_help, '', function(pattern)
             if not vim.api.nvim_win_is_valid(ret) then return end
             vim.api.nvim_set_current_win(ret)
             do_fold_search(pattern, false)
@@ -1065,7 +1072,7 @@ function M.toggle_peek()
         local ret     = p_win
         local prefill = ls .. ',' .. le .. ' '
         -- protect_len = #prefill so the range cannot be backspaced away
-        open_mini_input(' ⌘ Cmd  range is locked  Enter=run  Esc=cancel', prefill, function(cmd_text)
+        open_mini_input(M.config.ui.cmd_prompt .. M.config.ui.cmd_help, prefill, function(cmd_text)
             if not vim.api.nvim_win_is_valid(ret) then return end
             vim.api.nvim_set_current_win(ret)
             local cmd = (cmd_text or ''):match('^%s*(.*%S)')
