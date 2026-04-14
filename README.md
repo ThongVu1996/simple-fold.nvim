@@ -6,17 +6,21 @@ Inspired by [nvim-ufo](https://github.com/kevinhwang91/nvim-ufo), this plugin pr
 
 ## 🚀 Features
 
-1.  **Modern UI & Performance**: limit Treesitter parsing to 150 characters to prevent lag.
-2.  **PSR-12 Smart Brace Matching**: Unified color for `{` and `}` even on separate lines.
-3.  **LSP Diagnostics Dashboard**: See Error, Warning, Info, and Hints inside folded blocks.
-4.  **Multiline Return Peeking**: Read what your function returns without unfolding.
-5.  **Smart Fold Percentage**: Visualize how much code you're hiding (e.g., `(12.5%)`).
-6.  **Peek Fold (Breadcrumbs)**: Use `zp` to open a floating window with context-aware titles.
-7.  **Live Edit**: Edit code directly inside the Peek window.
-8.  **Protected Keymaps**: Safe `q` and `<CR>` handling (No more macro recording errors).
-9.  **Smart Auto-close**: Auto-closes preview on window/buffer leave.
-10. **Large File Armor**: Auto-switches to fast indent folding for files > 1.5MB.
-11. **Persistence & Quick Levels**: Remember folds after restart and toggle levels with `z1-z5`.
+1.  **Modern UI & Performance**: High-performance fold rendering with syntax highlighting (colors dynamically extracted from Treesitter).
+2.  **PSR-12 Smart Brace Matching**: Automatically finds and displays `{ ... }` structure, supporting PSR-12 style next-line braces.
+3.  **Intelligent Bracket Nesting**: Automatically detects and pairs up to 3 outer bracket shells (e.g., `({[ ... ]})`) to keep the visualization clean.
+4.  **Signature Preservation (Smart Cut)**: Protects important function arguments `()` and return types `: Type` intact while smartly filtering out redundant trailing fold-start braces.
+5.  **Smart Toggle (`za`)**: A heavy-duty override for `za` that securely prevents `E490` crashes and safely jumps down to handle multi-line PSR-12 headers.
+6.  **LSP Diagnostics Dashboard**: Real-time Error 󰅚, Warning 󰀪, Info 󰋽, and Hint 󰌶 counts visible on folded lines.
+7.  **Multiline Return Peeking**: Preview function return values directly on the fold line (e.g., `➔ $this->data`).
+8.  **Absolute PHP Conceal**: Automatically injects and **completely hides** `<?php` tags in Peek windows to enable syntax highlighting for snippets.
+9.  **Persistent Folds**: Remembers your manual folds across sessions and file restarts (Auto `mkview`/`loadview`).
+10. **Safeguarded Peek (Live Edit)**: Use `zp` to edit code in a floating window. Safeguarded against "self-folding" and macro errors.
+11. **Relative Numbering in Peek**: Improved navigation and editing experience inside the preview window.
+12. **Smart Fold Percentage**: Visualize code density at a glance (e.g., `⚡ 45 lines (12.5%)`).
+13. **Large File Armor**: Automatically scales to faster folding methods for massive files to prevent lag.
+14. **Quick Levels**: Toggle global fold levels instantly with `z1` through `z5`.
+15. **Native Extensibility**: Fully language-agnostic logic. You can gracefully extend any folding patterns via your personal `~/.config/nvim/after/queries/` without modifying core logic.
 
 ## 📦 Installation
 
@@ -25,7 +29,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 {
     "ThongVu1996/simple-fold.nvim",
-    event = "VeryLazy",
+    event = { "BufReadPost", "BufNewFile" },
     opts = {
         icon = "⚡",
         suffix_text = "lines",
@@ -44,6 +48,7 @@ Using [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ## ⌨️ Keymaps
 
+*   `za`: Smart toggle fold (Intelligent jump for PSR-12 and E490 safeguarded).
 *   `zp`: Toggle Peek Fold (Floating window).
 *   `q`: Close Peek window (inside Peek).
 *   `<CR>`: Jump to line and open fold (inside Peek).
